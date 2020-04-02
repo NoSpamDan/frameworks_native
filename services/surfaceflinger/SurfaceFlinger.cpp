@@ -1648,6 +1648,11 @@ void SurfaceFlinger::onVsyncReceived(int32_t sequenceId, hwc2_display_t hwcDispl
         return;
     }
 
+    if (hwcDisplayId != getHwComposer().getInternalHwcDisplayId()) {
+        // For now, we don't do anything with external display vsyncs.
+        return;
+    }
+
     bool periodFlushed = false;
     mScheduler->addResyncSample(timestamp, &periodFlushed);
     if (periodFlushed) {
@@ -1774,10 +1779,10 @@ void SurfaceFlinger::setVsyncEnabledInternal(bool enabled) {
     } else if (mActiveVsyncSource) {
         displayId = mActiveVsyncSource->getId();
     }
-        sp<DisplayDevice> display = getDefaultDisplayDeviceLocked();
-        if (display && display->isPoweredOn()) {
-            setVsyncEnabledInHWC(*displayId, mHWCVsyncPendingState);
-        }
+    sp<DisplayDevice> display = getDefaultDisplayDeviceLocked();
+    if (display && display->isPoweredOn()) {
+        setVsyncEnabledInHWC(*displayId, mHWCVsyncPendingState);
+    }
     if (mNextVsyncSource) {
         mActiveVsyncSource = mNextVsyncSource;
         mNextVsyncSource = NULL;
@@ -3553,7 +3558,7 @@ void SurfaceFlinger::updateInputFlinger() {
         setInputWindowsFinished();
     }
 
-    executeInputWindowCommands();
+    mInputWindowCommands.clear();
 }
 
 void SurfaceFlinger::updateInputWindowInfo() {
@@ -3575,19 +3580,6 @@ void SurfaceFlinger::updateInputWindowInfo() {
 void SurfaceFlinger::commitInputWindowCommands() {
     mInputWindowCommands = mPendingInputWindowCommands;
     mPendingInputWindowCommands.clear();
-}
-
-void SurfaceFlinger::executeInputWindowCommands() {
-    for (const auto& transferTouchFocusCommand : mInputWindowCommands.transferTouchFocusCommands) {
-        if (transferTouchFocusCommand.fromToken != nullptr &&
-            transferTouchFocusCommand.toToken != nullptr &&
-            transferTouchFocusCommand.fromToken != transferTouchFocusCommand.toToken) {
-            mInputFlinger->transferTouchFocus(transferTouchFocusCommand.fromToken,
-                                              transferTouchFocusCommand.toToken);
-        }
-    }
-
-    mInputWindowCommands.clear();
 }
 
 void SurfaceFlinger::updateCursorAsync()
@@ -5144,6 +5136,9 @@ void SurfaceFlinger::setPowerModeInternal(const sp<DisplayDevice>& display, int 
         } else {
             updateVsyncSource();
         }
+        // Make sure HWVsync is disabled before turning off the display
+        setVsyncEnabledInHWC(*displayId, HWC2::Vsync::Disable);
+
         // Make sure HWVsync is disabled before turning off the display
         setVsyncEnabledInHWC(*displayId, HWC2::Vsync::Disable);
 
@@ -7202,7 +7197,7 @@ status_t SurfaceFlinger::setAllowedDisplayConfigs(const sp<IBinder>& displayToke
         return NO_ERROR;
     }
 
-    postMessageSync(new LambdaMessage([&]() NO_THREAD_SAFETY_ANALYSIS {
+    postMessageSync(new LambdaMessage([&]() {
         const auto display = getDisplayDeviceLocked(displayToken);
         if (!display) {
             ALOGE("Attempt to set allowed display configs for invalid display token %p",
@@ -7210,6 +7205,7 @@ status_t SurfaceFlinger::setAllowedDisplayConfigs(const sp<IBinder>& displayToke
         } else if (display->isVirtual()) {
             ALOGW("Attempt to set allowed display configs for virtual display");
         } else {
+            Mutex::Autolock lock(mStateLock);
             setAllowedDisplayConfigsInternal(display, allowedConfigs);
         }
     }));

@@ -310,6 +310,9 @@ public:
     // main thread function to enable/disable h/w composer event
     void setVsyncEnabledInternal(bool enabled);
 
+    // main thread function to enable/disable h/w composer event
+    void setPrimaryVsyncEnabledInternal(bool enabled);
+
     // called on the main thread by MessageQueue when an internal message
     // is received
     // TODO: this should be made accessible only to MessageQueue
@@ -577,7 +580,6 @@ private:
     void updateInputFlinger();
     void updateInputWindowInfo();
     void commitInputWindowCommands() REQUIRES(mStateLock);
-    void executeInputWindowCommands();
     void setInputWindowsFinished();
     void updateCursorAsync();
 
