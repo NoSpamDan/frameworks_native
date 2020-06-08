@@ -410,22 +410,7 @@ void SurfaceFlinger::onFirstRef()
     mEventQueue->init(this);
 }
 
-<<<<<<< HEAD
-SurfaceFlinger::~SurfaceFlinger()
-{
-#ifdef QCOM_UM_FAMILY
-    if (mDolphinFuncsEnabled) dlclose(mDolphinHandle);
-    if (mFrameExtn) dlclose(mFrameExtnLibHandle);
-
-    if(mUseSmoMo) {
-        mSmoMoDestroyFunc(mSmoMo);
-        dlclose(mSmoMoLibHandle);
-    }
-#endif
-}
-=======
 SurfaceFlinger::~SurfaceFlinger() = default;
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 
 void SurfaceFlinger::binderDied(const wp<IBinder>& /* who */)
 {
@@ -584,14 +569,16 @@ void SurfaceFlinger::bootFinished()
         readPersistentProperties();
         mBootStage = BootStage::FINISHED;
 
-        // set the refresh rate according to the policy
-        const auto& performanceRefreshRate =
-                mRefreshRateConfigs.getRefreshRate(RefreshRateType::PERFORMANCE);
+        if (mRefreshRateConfigs->refreshRateSwitchingSupported()) {
+            // set the refresh rate according to the policy
+            const auto& performanceRefreshRate =
+                    mRefreshRateConfigs->getRefreshRateFromType(RefreshRateType::PERFORMANCE);
 
-        if (performanceRefreshRate && isDisplayConfigAllowed(performanceRefreshRate->configId)) {
-            setRefreshRateTo(RefreshRateType::PERFORMANCE, Scheduler::ConfigEvent::None);
-        } else {
-            setRefreshRateTo(RefreshRateType::DEFAULT, Scheduler::ConfigEvent::None);
+            if (isDisplayConfigAllowed(performanceRefreshRate.configId)) {
+                setRefreshRateTo(RefreshRateType::PERFORMANCE, Scheduler::ConfigEvent::None);
+            } else {
+                setRefreshRateTo(RefreshRateType::DEFAULT, Scheduler::ConfigEvent::None);
+            }
         }
     }));
 }
@@ -634,32 +621,6 @@ void SurfaceFlinger::init() {
     ALOGI("Phase offset NS: %" PRId64 "", mPhaseOffsets->getCurrentAppOffset());
 
     Mutex::Autolock _l(mStateLock);
-    // start the EventThread
-    mScheduler =
-            getFactory().createScheduler([this](bool enabled) { setPrimaryVsyncEnabled(enabled); },
-                                         mRefreshRateConfigs);
-    auto resyncCallback =
-            mScheduler->makeResyncCallback(std::bind(&SurfaceFlinger::getVsyncPeriod, this));
-
-    mAppConnectionHandle =
-            mScheduler->createConnection("app", mVsyncModulator.getOffsets().app,
-                                         mPhaseOffsets->getOffsetThresholdForNextVsync(),
-                                         resyncCallback,
-                                         impl::EventThread::InterceptVSyncsCallback());
-    mSfConnectionHandle =
-            mScheduler->createConnection("sf", mVsyncModulator.getOffsets().sf,
-                                         mPhaseOffsets->getOffsetThresholdForNextVsync(),
-                                         resyncCallback, [this](nsecs_t timestamp) {
-                                             mInterceptor->saveVSyncEvent(timestamp);
-                                         });
-
-    mEventQueue->setEventConnection(mScheduler->getEventConnection(mSfConnectionHandle));
-    mVsyncModulator.setSchedulerAndHandles(mScheduler.get(), mAppConnectionHandle.get(),
-                                           mSfConnectionHandle.get());
-
-    mRegionSamplingThread =
-            new RegionSamplingThread(*this, *mScheduler,
-                                     RegionSamplingThread::EnvironmentTimingTunables());
 
     // Get a RenderEngine for the given display / config (can't fail)
     int32_t renderEngineFeature = 0;
@@ -729,82 +690,6 @@ void SurfaceFlinger::init() {
     if (mStartPropertySetThread->Start() != NO_ERROR) {
         ALOGE("Run StartPropertySetThread failed!");
     }
-
-    mScheduler->setChangeRefreshRateCallback(
-            [this](RefreshRateType type, Scheduler::ConfigEvent event) {
-                Mutex::Autolock lock(mStateLock);
-                setRefreshRateTo(type, event);
-            });
-    mScheduler->setGetCurrentRefreshRateTypeCallback([this] {
-        Mutex::Autolock lock(mStateLock);
-        const auto display = getDefaultDisplayDeviceLocked();
-        if (!display) {
-            // If we don't have a default display the fallback to the default
-            // refresh rate type
-            return RefreshRateType::DEFAULT;
-        }
-
-        const int configId = display->getActiveConfig();
-        for (const auto& [type, refresh] : mRefreshRateConfigs.getRefreshRates()) {
-            if (refresh && refresh->configId == configId) {
-                return type;
-            }
-        }
-        // This should never happen, but just gracefully fallback to default.
-        return RefreshRateType::DEFAULT;
-    });
-    mScheduler->setGetVsyncPeriodCallback([this] {
-        Mutex::Autolock lock(mStateLock);
-        return getVsyncPeriod();
-    });
-
-    mRefreshRateConfigs.populate(getHwComposer().getConfigs(*display->getId()));
-<<<<<<< HEAD
-    mRefreshRateStats.setConfigMode(active_config);
-
-#ifdef QCOM_UM_FAMILY
-    if (mUseSmoMo) {
-        mSmoMoLibHandle = dlopen("libsmomo.qti.so", RTLD_NOW);
-        if (!mSmoMoLibHandle) {
-            ALOGE("Unable to open libsmomo: %s", dlerror());
-        } else {
-             mSmoMoCreateFunc =
-                    reinterpret_cast<CreateSmoMoFuncPtr>(dlsym(mSmoMoLibHandle, "CreateSmomo"));
-             mSmoMoDestroyFunc =
-                    reinterpret_cast<DestroySmoMoFuncPtr>(dlsym(mSmoMoLibHandle, "DestroySmomo"));
-             if (mSmoMoCreateFunc && mSmoMoDestroyFunc) {
-                mSmoMo = mSmoMoCreateFunc();
-             } else {
-                ALOGE("Can't load libsmomo symbols: %s", dlerror());
-             }
-        }
-
-        if (mSmoMo) {
-            mSmoMo->SetChangeRefreshRateCallback(
-                [this](int32_t refreshRate) {
-                    Mutex::Autolock lock(mStateLock);
-                    setRefreshRateTo(refreshRate);
-                });
-
-            std::vector<float> refreshRates;
-            auto iter = mRefreshRateConfigs.getRefreshRates().cbegin();
-            while (iter != mRefreshRateConfigs.getRefreshRates().cend()) {
-                if (iter->second->fps > 0) {
-                    refreshRates.push_back(iter->second->fps);
-                }
-                ++iter;
-            }
-            mSmoMo->SetDisplayRefreshRates(refreshRates);
-
-            ALOGI("SmoMo is enabled");
-        } else {
-            mUseSmoMo = false;
-        }
-    }
-#endif
-=======
-    mRefreshRateStats.setConfigMode(getHwComposer().getActiveConfigIndex(*display->getId()));
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 
     ALOGV("Done initializing");
 }
@@ -959,7 +844,8 @@ status_t SurfaceFlinger::getDisplayConfigs(const sp<IBinder>& displayToken,
         info.xdpi = xdpi;
         info.ydpi = ydpi;
         info.fps = 1e9 / hwConfig->getVsyncPeriod();
-        const auto refreshRateType = mRefreshRateConfigs.getRefreshRateType(hwConfig->getId());
+        const auto refreshRateType =
+                mRefreshRateConfigs->getRefreshRateTypeFromHwcConfigId(hwConfig->getId());
         const auto offset = mPhaseOffsets->getOffsetsForRefreshRate(refreshRateType);
         info.appVsyncOffset = offset.late.app;
 
@@ -1061,7 +947,8 @@ void SurfaceFlinger::setActiveConfigInternal() {
     }
 
     std::lock_guard<std::mutex> lock(mActiveConfigLock);
-    mRefreshRateStats.setConfigMode(mUpcomingActiveConfig.configId);
+    mRefreshRateConfigs->setCurrentConfig(mUpcomingActiveConfig.configId);
+    mRefreshRateStats->setConfigMode(mUpcomingActiveConfig.configId);
 
     display->setActiveConfig(mUpcomingActiveConfig.configId);
 
@@ -1340,9 +1227,6 @@ status_t SurfaceFlinger::enableVSyncInjections(bool enable) {
             return;
         }
 
-        auto resyncCallback =
-                mScheduler->makeResyncCallback(std::bind(&SurfaceFlinger::getVsyncPeriod, this));
-
         // TODO(b/128863962): Part of the Injector should be refactored, so that it
         // can be passed to Scheduler.
         if (enable) {
@@ -1354,11 +1238,11 @@ status_t SurfaceFlinger::enableVSyncInjections(bool enable) {
                                            impl::EventThread::InterceptVSyncsCallback(),
                                            "injEventThread");
             }
-            mEventQueue->setEventThread(mInjectorEventThread.get(), std::move(resyncCallback));
+            mEventQueue->setEventThread(mInjectorEventThread.get(), [&] { mScheduler->resync(); });
         } else {
             ALOGV("VSync Injections disabled");
             mEventQueue->setEventThread(mScheduler->getEventThread(mSfConnectionHandle),
-                                        std::move(resyncCallback));
+                                        [&] { mScheduler->resync(); });
         }
 
         mInjectVSyncs = enable;
@@ -1469,16 +1353,10 @@ status_t SurfaceFlinger::notifyPowerHint(int32_t hintId) {
 
 sp<IDisplayEventConnection> SurfaceFlinger::createDisplayEventConnection(
         ISurfaceComposer::VsyncSource vsyncSource, ISurfaceComposer::ConfigChanged configChanged) {
-    auto resyncCallback = mScheduler->makeResyncCallback([this] {
-        Mutex::Autolock lock(mStateLock);
-        return getVsyncPeriod();
-    });
-
     const auto& handle =
             vsyncSource == eVsyncSourceSurfaceFlinger ? mSfConnectionHandle : mAppConnectionHandle;
 
-    return mScheduler->createDisplayEventConnection(handle, std::move(resyncCallback),
-                                                    configChanged);
+    return mScheduler->createDisplayEventConnection(handle, configChanged);
 }
 
 // ----------------------------------------------------------------------------
@@ -1575,13 +1453,8 @@ void SurfaceFlinger::setRefreshRateTo(RefreshRateType refreshRate, Scheduler::Co
     ATRACE_CALL();
 
     // Don't do any updating if the current fps is the same as the new one.
-    const auto& refreshRateConfig = mRefreshRateConfigs.getRefreshRate(refreshRate);
-    if (!refreshRateConfig) {
-        ALOGV("Skipping refresh rate change request for unsupported rate.");
-        return;
-    }
-
-    const int desiredConfigId = refreshRateConfig->configId;
+    const auto& refreshRateConfig = mRefreshRateConfigs->getRefreshRateFromType(refreshRate);
+    const int desiredConfigId = refreshRateConfig.configId;
 
     if (!isDisplayConfigAllowed(desiredConfigId)) {
         ALOGV("Skipping config %d as it is not part of allowed configs", desiredConfigId);
@@ -1639,32 +1512,11 @@ void SurfaceFlinger::setPrimaryVsyncEnabledInternal(bool enabled) {
 
     mHWCVsyncPendingState = enabled ? HWC2::Vsync::Enable : HWC2::Vsync::Disable;
 
-<<<<<<< HEAD
-    auto displayId = getInternalDisplayIdLocked();
-    if (mNextVsyncSource) {
-        // Disable current vsync source before enabling the next source
-        if (mActiveVsyncSource) {
-            displayId = mActiveVsyncSource->getId();
-            getHwComposer().setVsyncEnabled(*displayId, HWC2::Vsync::Disable);
-        }
-        displayId = mNextVsyncSource->getId();
-    } else if (mActiveVsyncSource) {
-        displayId = mActiveVsyncSource->getId();
-    }
-    sp<DisplayDevice> display = getDefaultDisplayDeviceLocked();
-    if (display && display->isPoweredOn()) {
-        setVsyncEnabledInHWC(*displayId, mHWCVsyncPendingState);
-    }
-    if (mNextVsyncSource) {
-        mActiveVsyncSource = mNextVsyncSource;
-        mNextVsyncSource = NULL;
-=======
     if (const auto displayId = getInternalDisplayIdLocked()) {
         sp<DisplayDevice> display = getDefaultDisplayDeviceLocked();
         if (display && display->isPoweredOn()) {
             setVsyncEnabledInHWC(*displayId, mHWCVsyncPendingState);
         }
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
     }
 }
 
@@ -1955,53 +1807,6 @@ bool SurfaceFlinger::handleMessageInvalidate() {
     return refreshNeeded;
 }
 
-<<<<<<< HEAD
-void SurfaceFlinger::setDisplayAnimating(const sp<DisplayDevice>& hw) {
-#ifdef QCOM_UM_FAMILY
-    static android::sp<vendor::display::config::V1_1::IDisplayConfig> disp_config_v1_1 =
-                                        vendor::display::config::V1_1::IDisplayConfig::getService();
-
-    const std::optional<DisplayId>& displayId = hw->getId();
-    const auto dpy = getHwComposer().fromPhysicalDisplayId(*displayId);
-
-    if (disp_config_v1_1 == NULL || !dpy || hw->getIsDisplayBuiltInType()) {
-        return;
-    }
-
-    bool hasScreenshot = false;
-    mDrawingState.traverseInZOrder([&](Layer* layer) {
-      if (layer->getLayerStack() == hw->getLayerStack()) {
-          if (layer->isScreenshot()) {
-              hasScreenshot = true;
-          }
-      }
-    });
-
-    if (hasScreenshot == hw->getAnimating()) {
-        return;
-    }
-
-    disp_config_v1_1->setDisplayAnimating(*dpy, hasScreenshot);
-    hw->setAnimating(hasScreenshot);
-#endif
-}
-
-
-void SurfaceFlinger::setLayerAsMask(const sp<const DisplayDevice>& hw, const uint64_t& layerId) {
-#ifdef QCOM_UM_FAMILY
-    static android::sp<vendor::display::config::V1_7::IDisplayConfig> disp_config_v1_7 =
-                                        vendor::display::config::V1_7::IDisplayConfig::getService();
-    const std::optional<DisplayId>& displayId = hw->getId();
-    const auto dpy = getHwComposer().fromPhysicalDisplayId(*displayId);
-    if (!disp_config_v1_7) {
-      return;
-    }
-    disp_config_v1_7->setLayerAsMask(*dpy, layerId);
-#endif
-}
-
-=======
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 void SurfaceFlinger::calculateWorkingSet() {
     ATRACE_CALL();
     ALOGV(__FUNCTION__);
@@ -2754,6 +2559,9 @@ void SurfaceFlinger::processDisplayHotplugEventsLocked() {
         if (event.connection == HWC2::Connection::Connected) {
             if (!mPhysicalDisplayTokens.count(info->id)) {
                 ALOGV("Creating display %s", to_string(info->id).c_str());
+                if (event.hwcDisplayId == getHwComposer().getInternalHwcDisplayId()) {
+                    initScheduler(info->id);
+                }
                 mPhysicalDisplayTokens[info->id] = new BBinder();
                 DisplayDeviceState state;
                 state.displayId = info->id;
@@ -2862,40 +2670,6 @@ sp<DisplayDevice> SurfaceFlinger::setupNewDisplayDeviceInternal(
     return display;
 }
 
-<<<<<<< HEAD
-void SurfaceFlinger::setFrameBufferSizeForScaling(sp<DisplayDevice> displayDevice,
-                                                  const DisplayDeviceState& state) {
-    base::unique_fd fd;
-    auto display = displayDevice->getCompositionDisplay();
-    int newWidth = state.viewport.width();
-    int newHeight = state.viewport.height();
-
-    if (state.orientation == DISPLAY_ORIENTATION_90 || state.orientation ==
-        DISPLAY_ORIENTATION_270) {
-        std::swap(newWidth, newHeight);
-    }
-
-    if (displayDevice->getWidth() == newWidth &&
-        displayDevice->getHeight() == newHeight) {
-        displayDevice->setProjection(state.orientation, state.viewport, state.viewport);
-        return;
-    }
-
-    if (mBootStage == BootStage::FINISHED) {
-        displayDevice->setDisplaySize(newWidth, newHeight);
-        displayDevice->setProjection(state.orientation, state.viewport, state.viewport);
-        display->getRenderSurface()->setViewportAndProjection();
-        display->getRenderSurface()->flipClientTarget(true);
-        // queue a scratch buffer to flip Client Target with updated size
-        display->getRenderSurface()->queueBuffer(std::move(fd));
-        display->getRenderSurface()->flipClientTarget(false);
-        // releases the FrameBuffer that was acquired as part of queueBuffer()
-        display->getRenderSurface()->onPresentDisplayCompleted();
-    }
-}
-
-=======
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 void SurfaceFlinger::processDisplayChangesLocked() {
     // here we take advantage of Vector's copy-on-write semantics to
     // improve performance by skipping the transaction entirely when
@@ -3026,39 +2800,6 @@ void SurfaceFlinger::processDisplayChangesLocked() {
                     mDisplays.emplace(displayToken,
                                       setupNewDisplayDeviceInternal(displayToken, displayId, state,
                                                                     dispSurface, producer));
-<<<<<<< HEAD
-#ifdef QCOM_UM_FAMILY
-                    // Check if power mode override is available and supported by HWC.
-                    {
-                        using vendor::display::config::V1_7::IDisplayConfig;
-                        android::sp<IDisplayConfig> disp_config_v1_7 =
-                            IDisplayConfig::getService();
-                        if (disp_config_v1_7 != NULL) {
-                             const auto hwcDisplayId =
-                                 getHwComposer().fromPhysicalDisplayId(*displayId);
-                            if (disp_config_v1_7->isPowerModeOverrideSupported(*hwcDisplayId)) {
-                                sp<DisplayDevice> display = getDisplayDeviceLocked(displayToken);
-                                display->setPowerModeOverrideConfig(true);
-                            }
-                        }
-                    }
-                    {
-                        using vendor::display::config::V1_9::IDisplayConfig;
-                        android::sp<IDisplayConfig> disp_config_v1_9 =
-                            IDisplayConfig::getService();
-                        if (disp_config_v1_9 != NULL) {
-                            const auto hwcDisplayId =
-                                getHwComposer().fromPhysicalDisplayId(*displayId);
-                            if (disp_config_v1_9->isBuiltInDisplay(*hwcDisplayId)) {
-                                sp<DisplayDevice> display = getDisplayDeviceLocked(displayToken);
-                                display->setIsDisplayBuiltInType(true);
-                            }
-                        }
-                    }
-#endif
-
-=======
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
                     if (!state.isVirtual()) {
                         LOG_ALWAYS_FATAL_IF(!displayId);
                         dispatchDisplayHotplugEvent(displayId->value, true);
@@ -3264,6 +3005,55 @@ void SurfaceFlinger::latchAndReleaseBuffer(const sp<Layer>& layer) {
         layer->latchBuffer(ignored, systemTime());
     }
     layer->releasePendingBuffer(systemTime());
+}
+
+void SurfaceFlinger::initScheduler(DisplayId primaryDisplayId) {
+    if (mScheduler) {
+        // In practice it's not allowed to hotplug in/out the primary display once it's been
+        // connected during startup, but some tests do it, so just warn and return.
+        ALOGW("Can't re-init scheduler");
+        return;
+    }
+
+    int currentConfig = getHwComposer().getActiveConfigIndex(primaryDisplayId);
+    mRefreshRateConfigs =
+            std::make_unique<scheduler::RefreshRateConfigs>(refresh_rate_switching(false),
+                                                            getHwComposer().getConfigs(
+                                                                    primaryDisplayId),
+                                                            currentConfig);
+    mRefreshRateStats =
+            std::make_unique<scheduler::RefreshRateStats>(*mRefreshRateConfigs, *mTimeStats,
+                                                          currentConfig, HWC_POWER_MODE_OFF);
+    mRefreshRateStats->setConfigMode(currentConfig);
+
+    // start the EventThread
+    mScheduler =
+            getFactory().createScheduler([this](bool enabled) { setPrimaryVsyncEnabled(enabled); },
+                                         *mRefreshRateConfigs);
+    mAppConnectionHandle =
+            mScheduler->createConnection("app", mVsyncModulator.getOffsets().app,
+                                         mPhaseOffsets->getOffsetThresholdForNextVsync(),
+                                         impl::EventThread::InterceptVSyncsCallback());
+    mSfConnectionHandle =
+            mScheduler->createConnection("sf", mVsyncModulator.getOffsets().sf,
+                                         mPhaseOffsets->getOffsetThresholdForNextVsync(),
+                                         [this](nsecs_t timestamp) {
+                                             mInterceptor->saveVSyncEvent(timestamp);
+                                         });
+
+    mEventQueue->setEventConnection(mScheduler->getEventConnection(mSfConnectionHandle));
+    mVsyncModulator.setSchedulerAndHandles(mScheduler.get(), mAppConnectionHandle.get(),
+                                           mSfConnectionHandle.get());
+
+    mRegionSamplingThread =
+            new RegionSamplingThread(*this, *mScheduler,
+                                     RegionSamplingThread::EnvironmentTimingTunables());
+
+    mScheduler->setChangeRefreshRateCallback(
+            [this](RefreshRateType type, Scheduler::ConfigEvent event) {
+                Mutex::Autolock lock(mStateLock);
+                setRefreshRateTo(type, event);
+            });
 }
 
 void SurfaceFlinger::commitTransaction()
@@ -3602,23 +3392,7 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
     const auto& displayState = display->getState();
     const auto displayId = display->getId();
     auto& renderEngine = getRenderEngine();
-<<<<<<< HEAD
-    bool isSecureDisplay = false;
-    bool isSecureCamera = false;
-    for (const auto& layer : displayDevice->getVisibleLayersSortedByZ()) {
-        if (layer->isSecureDisplay()) {
-            isSecureDisplay = true;
-        }
-        if (layer->isSecureCamera()) {
-            isSecureCamera = true;
-        }
-    }
-
-    const bool supportProtectedContent =
-            renderEngine.supportsProtectedContent() && !isSecureDisplay && !isSecureCamera;
-=======
     const bool supportProtectedContent = renderEngine.supportsProtectedContent();
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 
     const Region bounds(displayState.bounds);
     const DisplayRenderArea renderArea(displayDevice);
@@ -3684,8 +3458,7 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
                                               HWC2::DisplayCapability::SkipClientColorTransform);
 
         // Compute the global color transform matrix.
-        applyColorMatrix = !hasDeviceComposition && !skipClientColorTransform &&
-                           (displayDevice->isPrimary() || displayDevice->getIsDisplayBuiltInType());
+        applyColorMatrix = !hasDeviceComposition && !skipClientColorTransform;
         if (applyColorMatrix) {
             clientCompositionDisplay.colorTransform = displayState.colorTransformMat;
         }
@@ -4798,7 +4571,7 @@ void SurfaceFlinger::setPowerModeInternal(const sp<DisplayDevice>& display, int 
 
     if (display->isPrimary()) {
         mTimeStats->setPowerMode(mode);
-        mRefreshRateStats.setPowerMode(mode);
+        mRefreshRateStats->setPowerMode(mode);
         mScheduler->setDisplayPowerState(mode == HWC_POWER_MODE_NORMAL);
     }
 
@@ -4819,85 +4592,6 @@ void SurfaceFlinger::setPowerMode(const sp<IBinder>& displayToken, int mode) {
     }));
 }
 
-<<<<<<< HEAD
-void SurfaceFlinger::setPowerMode(const sp<IBinder>& displayToken, int mode) {
-    sp<DisplayDevice> display(getDisplayDevice(displayToken));
-
-    if (!display) {
-        ALOGE("Attempt to set power mode %d for invalid display token %p", mode,
-              displayToken.get());
-        return;
-    } else if (display->isVirtual()) {
-        ALOGW("Attempt to set power mode %d for virtual display", mode);
-        return;
-    }
-
-#ifdef QCOM_UM_FAMILY
-    const auto displayId = display->getId();
-    const auto hwcDisplayId = getHwComposer().fromPhysicalDisplayId(*displayId);
-#endif
-
-    // Fallback to default power state behavior as HWC does not support power mode override.
-    bool shouldSetPowerModeOnMainThread = !display->getPowerModeOverrideConfig();
-
-#ifdef QCOM_UM_FAMILY
-    using vendor::display::config::V1_7::IDisplayConfig;
-    static android::sp<IDisplayConfig> disp_config_v1_7 = IDisplayConfig::getService();
-    shouldSetPowerModeOnMainThread = disp_config_v1_7 == NULL || shouldSetPowerModeOnMainThread;
-#endif
-
-    if (shouldSetPowerModeOnMainThread) {
-       setPowerModeOnMainThread(displayToken, mode);
-       return;
-    }
-
-#ifdef QCOM_UM_FAMILY
-    // Call into HWC to change hardware power state first, followed by surfaceflinger
-    // power state while stepping up i.e. off -> on, dozesuspend -> doze/on.
-    // Let surfaceflinger power state change happen first, followed by hardware power
-    // state while stepping down i.e. on -> off, doze/on -> dozesuspend.
-    IDisplayConfig::PowerMode hwcMode = IDisplayConfig::PowerMode::Off;
-    switch (mode) {
-        case HWC_POWER_MODE_DOZE:         hwcMode = IDisplayConfig::PowerMode::Doze;        break;
-        case HWC_POWER_MODE_NORMAL:       hwcMode = IDisplayConfig::PowerMode::On;          break;
-        case HWC_POWER_MODE_DOZE_SUSPEND: hwcMode = IDisplayConfig::PowerMode::DozeSuspend; break;
-        default:                          hwcMode = IDisplayConfig::PowerMode::Off;         break;
-    }
-#endif
-
-    bool step_up = false;
-    int currentMode = display->getPowerMode();
-    if (currentMode == HWC_POWER_MODE_OFF) {
-        if (mode == HWC_POWER_MODE_DOZE || mode == HWC_POWER_MODE_NORMAL) {
-            step_up = true;
-        }
-    } else if (currentMode == HWC_POWER_MODE_DOZE_SUSPEND) {
-        if (mode == HWC_POWER_MODE_DOZE || mode == HWC_POWER_MODE_NORMAL) {
-            step_up = true;
-        }
-    }
-
-#ifdef QCOM_UM_FAMILY
-    // Change hardware state first while stepping up.
-    if (step_up) {
-        disp_config_v1_7->setPowerMode(*hwcDisplayId, hwcMode);
-    }
-#endif
-
-    // Change SF state now.
-    setPowerModeOnMainThread(displayToken, mode);
-
-#ifdef QCOM_UM_FAMILY
-    // Change hardware state now while stepping down.
-    if (!step_up) {
-        disp_config_v1_7->setPowerMode(*hwcDisplayId, hwcMode);
-    }
-#endif
-
-}
-
-=======
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 // ---------------------------------------------------------------------------
 
 status_t SurfaceFlinger::doDump(int fd, const DumpArgs& args,
@@ -4975,245 +4669,6 @@ status_t SurfaceFlinger::dumpCritical(int fd, const DumpArgs&, bool asProto) {
     return doDump(fd, DumpArgs(), asProto);
 }
 
-<<<<<<< HEAD
-status_t SurfaceFlinger::doDumpContinuous(int fd, const DumpArgs& args) {
-    // Format: adb shell dumpsys SurfaceFlinger --file --no-limit
-    size_t numArgs = args.size();
-    status_t err = NO_ERROR;
-
-    if (args[0] == String16("--allocated_buffers")) {
-        std::string dumpsys;
-        GraphicBufferAllocator& alloc(GraphicBufferAllocator::get());
-        alloc.dump(dumpsys);
-        write(fd, dumpsys.c_str(), dumpsys.size());
-        return NO_ERROR;
-    }
-
-
-    Mutex::Autolock _l(mFileDump.lock);
-
-    // Same command is used to start and end dump.
-    mFileDump.running = !mFileDump.running;
-
-    if (mFileDump.running) {
-        std::ofstream ofs;
-        ofs.open(mFileDump.name, std::ofstream::out | std::ofstream::trunc);
-        if (!ofs) {
-            mFileDump.running = false;
-            err = UNKNOWN_ERROR;
-        } else {
-            ofs.close();
-            mFileDump.position = 0;
-            if (numArgs >= 2 && (args[1] == String16("--no-limit"))) {
-            mFileDump.noLimit = true;
-        } else {
-            mFileDump.noLimit = false;
-        }
-      }
-    }
-
-    std::string result;
-    result += mFileDump.running ? "Start" : "End";
-    result += mFileDump.noLimit ? " unlimited" : " fixed limit";
-    result += " dumpsys to file : ";
-    result += mFileDump.name;
-    result += "\n";
-
-    write(fd, result.c_str(), result.size());
-
-    return NO_ERROR;
-}
-
-void SurfaceFlinger::dumpMemoryAllocations(bool dump)
-{
-    if (!dump) {
-        return;
-    }
-
-    if (mMemoryDump.mMemoryDumpCount--) {
-        return;
-    }
-    mMemoryDump.mMemoryDumpCount = 300;
-
-    std::string dumpsys;
-    GraphicBufferAllocator& alloc(GraphicBufferAllocator::get());
-    alloc.dump(dumpsys);
-    std::string tmp(dumpsys);
-    size_t pos = tmp.find("Total allocated");
-    if (!pos) {
-        return;
-    }
-    tmp = tmp.substr(pos);
-    pos = tmp.find(":");
-    if (!pos) {
-        return;
-    }
-    tmp = tmp.substr(pos + 1);
-    std::string::size_type sz;
-    int currentSize = std::stoi (tmp,&sz);
-    if (currentSize > mMemoryDump.mMaxAllocationLimit + 10*1024) {
-        ALOGW("Total allocated buffer limit crossed %d", currentSize);
-        alloc.dumpToSystemLog();
-        char timeStamp[32];
-        char dataSize[32];
-        char hms[32];
-        long millis;
-        struct timeval tv;
-        struct tm *ptm;
-        gettimeofday(&tv, NULL);
-        ptm = localtime(&tv.tv_sec);
-        strftime (hms, sizeof (hms), "%H:%M:%S", ptm);
-        millis = tv.tv_usec / 1000;
-        snprintf(timeStamp, sizeof(timeStamp), "Timestamp: %s.%03ld", hms, millis);
-        snprintf(dataSize, sizeof(dataSize), "Size: %8zu", dumpsys.size());
-        std::fstream fs;
-        fs.open(mMemoryDump.mMemoryAllocFileName, std::ios::app);
-        if (!fs) {
-            ALOGE("Failed to open %s file for dumpsys", mMemoryDump.mMemoryAllocFileName);
-            return;
-        }
-        fs.seekp(mMemoryDump.mMemoryAllocFilePos, std::ios::beg);
-        fs << "#@#@--SF Memory utilzation --@#@#" << std::endl;
-        fs << timeStamp << std::endl;
-        fs << dataSize << std::endl;
-        fs << dumpsys << std::endl;
-        mMemoryDump.mMemoryAllocFilePos = fs.tellp();
-        mMemoryDump.mMaxAllocationLimit = currentSize;
-        if (mMemoryDump.mMemoryAllocFilePos > (20 * 1024 * 1024)) {
-            mMemoryDump.mMemoryAllocFilePos = 0;
-        }
-        fs.close();
-    }
-}
-
-void SurfaceFlinger::printOpenFds() {
-    char path[100] = "";
-    snprintf(path, sizeof(path), "/proc/%d/fd", getpid());
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return;
-    }
-    int debugFileCountFd = open(mFileOpen.debugCountOpenFiles, O_WRONLY|O_CREAT|O_APPEND, 0664);
-    if (debugFileCountFd < 0) {
-        return;
-    }
-    struct dirent* de;
-    char timeStamp[32];
-    char hms[32];
-    char formatting[30] = "=======================\n";
-    long millis;
-    struct timeval tv;
-    struct tm *ptm;
-    int count = 1;
-    static int maxDumpCount = 200;
-    if (!maxDumpCount--) {
-        maxDumpCount = 200;
-        lseek(debugFileCountFd, 0, SEEK_SET);
-    }
-    gettimeofday(&tv, NULL);
-    ptm = localtime(&tv.tv_sec);
-    strftime (hms, sizeof (hms), "%H:%M:%S", ptm);
-    millis = tv.tv_usec / 1000;
-    snprintf(timeStamp, sizeof(timeStamp), "Timestamp: %s.%03ld\n", hms, millis);
-    write(debugFileCountFd, timeStamp, strlen(timeStamp));
-    write(debugFileCountFd, formatting, strlen(formatting));
-    while ((de = readdir(dir))) {
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) {
-            continue;
-        }
-        char name[300] = "";
-        char pathFull[300] = "";
-        size_t name_size = 0;
-        snprintf(pathFull, sizeof(pathFull) - 1, "%s/%s",path,de->d_name);
-        if ((name_size = readlink(pathFull, name, sizeof(name) - 1)) >= 0) {
-             char formatString[300 +3];
-             name[name_size] = '\0';
-             snprintf(formatString, sizeof(formatString) - 1, "%d. %s\n", count++, name);
-             write(debugFileCountFd, formatString, strlen(formatString));
-        }
-    }
-    closedir(dir);
-    write(debugFileCountFd, formatting, strlen(formatting));
-    close(debugFileCountFd);
-}
-
-void SurfaceFlinger::dumpDrawCycle(bool prePrepare) {
-    Mutex::Autolock _l(mFileDump.lock);
-
-    dumpMemoryAllocations(prePrepare);
-    // User might stop dump collection in middle of prepare & commit.
-    // Collect dumpsys again after commit and replace.
-
-    // debug total open files count;
-    int tmpFd = dup(0);
-    if (tmpFd > (mFileOpen.lastFdcount + 100) && prePrepare) {
-        ALOGE("Total open file count = %d", tmpFd);
-        printOpenFds();
-        mFileOpen.lastFdcount = tmpFd;
-    }
-    if (tmpFd > 0) {
-        close(tmpFd);
-    }
-    if (!mFileDump.running && !mFileDump.replaceAfterCommit) {
-        return;
-    }
-
-    Vector<String16> args;
-    std::string dumpsys;
-
-    {
-        Mutex::Autolock lock(mStateLock);
-        dumpAllLocked(args, dumpsys);
-    }
-
-    char timeStamp[32];
-    char dataSize[32];
-    char hms[32];
-    long millis;
-    struct timeval tv;
-    struct tm *ptm;
-
-    gettimeofday(&tv, NULL);
-    ptm = localtime(&tv.tv_sec);
-    strftime (hms, sizeof (hms), "%H:%M:%S", ptm);
-    millis = tv.tv_usec / 1000;
-    snprintf(timeStamp, sizeof(timeStamp), "Timestamp: %s.%03ld", hms, millis);
-    snprintf(dataSize, sizeof(dataSize), "Size: %8zu", dumpsys.size());
-
-    std::fstream fs;
-    fs.open(mFileDump.name, std::ios::app);
-    if (!fs) {
-        ALOGE("Failed to open %s file for dumpsys", mFileDump.name);
-        return;
-    }
-
-    // Format:
-    //    | start code | after commit? | time stamp | dump size | dump data |
-    fs.seekp(mFileDump.position, std::ios::beg);
-
-    fs << "#@#@-- DUMPSYS START --@#@#" << std::endl;
-    fs << "PostCommit: " << ( prePrepare ? "false" : "true" ) << std::endl;
-    fs << timeStamp << std::endl;
-    fs << dataSize << std::endl;
-    fs << dumpsys << std::endl;
-
-    if (prePrepare) {
-        mFileDump.replaceAfterCommit = true;
-    } else {
-        mFileDump.replaceAfterCommit = false;
-        // Reposition only after commit.
-        // Keep file size to appx 20 MB limit by default, wrap around if exceeds.
-        mFileDump.position = fs.tellp();
-        if (!mFileDump.noLimit && (mFileDump.position > (20 * 1024 * 1024))) {
-            mFileDump.position = 0;
-        }
-    }
-
-    fs.close();
-}
-
-=======
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 void SurfaceFlinger::listLayersLocked(std::string& result) const {
     mCurrentState.traverseInZOrder(
             [&](Layer* layer) { StringAppendF(&result, "%s\n", layer->getName().string()); });
@@ -5284,15 +4739,14 @@ void SurfaceFlinger::dumpVSync(std::string& result) const {
                   mUseSmart90ForVideo ? "on" : "off");
     StringAppendF(&result, "Allowed Display Configs: ");
     for (int32_t configId : mAllowedDisplayConfigs) {
-        for (auto refresh : mRefreshRateConfigs.getRefreshRates()) {
-            if (refresh.second && refresh.second->configId == configId) {
-                StringAppendF(&result, "%dHz, ", refresh.second->fps);
-            }
-        }
+        StringAppendF(&result, "%" PRIu32 " Hz, ",
+                      mRefreshRateConfigs->getRefreshRateFromConfigId(configId).fps);
     }
     StringAppendF(&result, "(config override by backdoor: %s)\n\n",
                   mDebugDisplayConfigSetByBackdoor ? "yes" : "no");
     mScheduler->dump(mAppConnectionHandle, result);
+    StringAppendF(&result, "+  Refresh rate switching: %s\n",
+                  mRefreshRateConfigs->refreshRateSwitchingSupported() ? "on" : "off");
 }
 
 void SurfaceFlinger::dumpStaticScreenStats(std::string& result) const {
@@ -5657,7 +5111,7 @@ void SurfaceFlinger::dumpAllLocked(const DumpArgs& args, std::string& result) co
     result.append("\nScheduler state:\n");
     result.append(mScheduler->doDump() + "\n");
     StringAppendF(&result, "+  Smart video mode: %s\n\n", mUseSmart90ForVideo ? "on" : "off");
-    result.append(mRefreshRateStats.doDump() + "\n");
+    result.append(mRefreshRateStats->doDump() + "\n");
 
     result.append(mTimeStats->miniDump());
     result.append("\n");
@@ -6128,7 +5582,8 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
             case 1034: {
                 // TODO(b/129297325): expose this via developer menu option
                 n = data.readInt32();
-                if (n && !mRefreshRateOverlay) {
+                if (n && !mRefreshRateOverlay &&
+                    mRefreshRateConfigs->refreshRateSwitchingSupported()) {
                     RefreshRateType type;
                     {
                         std::lock_guard<std::mutex> lock(mActiveConfigLock);
@@ -6706,25 +6161,6 @@ void SurfaceFlinger::traverseLayersInDisplay(const sp<const DisplayDevice>& disp
     }
 }
 
-void SurfaceFlinger::setPreferredDisplayConfig() {
-    const auto& type = mScheduler->getPreferredRefreshRateType();
-    const auto& config = mRefreshRateConfigs.getRefreshRate(type);
-    if (config && isDisplayConfigAllowed(config->configId)) {
-        ALOGV("switching to Scheduler preferred config %d", config->configId);
-        setDesiredActiveConfig({type, config->configId, Scheduler::ConfigEvent::Changed});
-    } else {
-        // Set the highest allowed config by iterating backwards on available refresh rates
-        const auto& refreshRates = mRefreshRateConfigs.getRefreshRates();
-        for (auto iter = refreshRates.crbegin(); iter != refreshRates.crend(); ++iter) {
-            if (iter->second && isDisplayConfigAllowed(iter->second->configId)) {
-                ALOGV("switching to allowed config %d", iter->second->configId);
-                setDesiredActiveConfig({iter->first, iter->second->configId,
-                        Scheduler::ConfigEvent::Changed});
-            }
-        }
-    }
-}
-
 void SurfaceFlinger::setAllowedDisplayConfigsInternal(const sp<DisplayDevice>& display,
                                                       const std::vector<int32_t>& allowedConfigs) {
     if (!display->isPrimary()) {
@@ -6746,39 +6182,31 @@ void SurfaceFlinger::setAllowedDisplayConfigsInternal(const sp<DisplayDevice>& d
     mScheduler->onConfigChanged(mAppConnectionHandle, display->getId()->value,
                                 display->getActiveConfig());
 
-    setPreferredDisplayConfig();
+    if (mRefreshRateConfigs->refreshRateSwitchingSupported()) {
+        const auto& type = mScheduler->getPreferredRefreshRateType();
+        const auto& config = mRefreshRateConfigs->getRefreshRateFromType(type);
+        if (isDisplayConfigAllowed(config.configId)) {
+            ALOGV("switching to Scheduler preferred config %d", config.configId);
+            setDesiredActiveConfig({type, config.configId, Scheduler::ConfigEvent::Changed});
+        } else {
+            // Set the highest allowed config by iterating backwards on available refresh rates
+            const auto& refreshRates = mRefreshRateConfigs->getRefreshRateMap();
+            for (auto iter = refreshRates.crbegin(); iter != refreshRates.crend(); ++iter) {
+                if (isDisplayConfigAllowed(iter->second.configId)) {
+                    ALOGV("switching to allowed config %d", iter->second.configId);
+                    setDesiredActiveConfig(
+                            {iter->first, iter->second.configId, Scheduler::ConfigEvent::Changed});
+                    break;
+                }
+            }
+        }
+    } else if (!isDisplayConfigAllowed(display->getActiveConfig())) {
+        ALOGV("switching to config %d", allowedConfigs[0]);
+        setDesiredActiveConfig(
+                {RefreshRateType::DEFAULT, allowedConfigs[0], Scheduler::ConfigEvent::Changed});
+    }
 }
 
-<<<<<<< HEAD
-bool SurfaceFlinger::canAllocateHwcDisplayIdForVDS(uint64_t usage) {
-#ifdef QCOM_UM_FAMILY
-    uint64_t flag_mask_pvt_wfd = ~0;
-    uint64_t flag_mask_hw_video = ~0;
-    char value[PROPERTY_VALUE_MAX] = {};
-    property_get("vendor.display.vds_allow_hwc", value, "0");
-    int allowHwcForVDS = atoi(value);
-    // Reserve hardware acceleration for WFD use-case
-    // GRALLOC_USAGE_PRIVATE_WFD + GRALLOC_USAGE_HW_VIDEO_ENCODER = WFD using HW composer.
-    flag_mask_pvt_wfd = GRALLOC_USAGE_PRIVATE_WFD;
-    flag_mask_hw_video = GRALLOC_USAGE_HW_VIDEO_ENCODER;
-    // GRALLOC_USAGE_PRIVATE_WFD + GRALLOC_USAGE_SW_READ_OFTEN
-    // WFD using GLES (directstreaming).
-    sDirectStreaming = ((usage & GRALLOC_USAGE_PRIVATE_WFD) &&
-                        (usage & GRALLOC_USAGE_SW_READ_OFTEN));
-    return (allowHwcForVDS || ((usage & flag_mask_pvt_wfd) &&
-            (usage & flag_mask_hw_video)));
-#else
-    sDirectStreaming = false;
-    return false;
-#endif
-}
-
-bool SurfaceFlinger::skipColorLayer(const char* layerType) {
-    return (sDirectStreaming && !strncmp(layerType, "ColorLayer", strlen("ColorLayer")));
-}
-
-=======
->>>>>>> parent of ec97680fc... surfaceflinger: Merge caf changes
 status_t SurfaceFlinger::setAllowedDisplayConfigs(const sp<IBinder>& displayToken,
                                                   const std::vector<int32_t>& allowedConfigs) {
     ATRACE_CALL();
